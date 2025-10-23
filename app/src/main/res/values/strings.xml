@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">otobusTest</string>
+    <string name="send_location">Konumu Gönder</string>
+    <string name="mapbox_access_token" translatable="false">pk.eyJ1IjoieWFzZWYiLCJhIjoiY203Y3ljOTBkMG91ZTJxc2Q4ajMxbXBrZyJ9.RQma04dxSdZQUEQJlAnVaA</string>
+</resources>
