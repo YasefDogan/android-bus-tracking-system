@@ -13,7 +13,7 @@ object Constants {
     const val GET_STATS_URL = "$BASE_URL/stats"
 
     // API Key - config.txt'deki API_KEY ile aynı olmalı!
-    const val API_KEY = "b7e3f4a9c2d1e8f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2"
+    const val API_KEY = "BURAYA_KENDİ_OLUSTURDUGUNUZ_APİ_KEY_İ_GİRİN"
 
     // Location Settings
     const val LOCATION_UPDATE_INTERVAL = 5000L // 5 saniye
