@@ -14,9 +14,11 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.text.InputType
 import android.util.Log
 import android.view.Gravity
 import android.view.ViewGroup
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
@@ -42,6 +44,14 @@ data class BusStop(
     var schedule: List<String>
 )
 
+data class UserLocationData(
+    val userId: String,
+    val latitude: Double,
+    val longitude: Double,
+    val userType: String, // "bus" veya "taxi"
+    val phoneNumber: String? = null
+)
+
 class MainActivity : AppCompatActivity() {
 
     private lateinit var fusedLocationClient: FusedLocationProviderClient
@@ -65,6 +75,7 @@ class MainActivity : AppCompatActivity() {
     private var userLocationAnnotations = mutableMapOf<String, PointAnnotation>()
     private var isFirstLocationReceived = false
     private var userId = UUID.randomUUID().toString().take(8)
+    private var userPhoneNumber: String = ""
     private var isLocationTrackingActive = false
     private var sendLocationRunnable: Runnable? = null
 
@@ -83,10 +94,10 @@ class MainActivity : AppCompatActivity() {
     private val AUTO_SEND_INTERVAL = 5000L
 
     private val locationRequest = LocationRequest.Builder(
-        Priority.PRIORITY_HIGH_ACCURACY, 10000
+        Priority.PRIORITY_HIGH_ACCURACY, 5000
     ).apply {
-        setMinUpdateIntervalMillis(5000)
-        setMaxUpdateDelayMillis(15000)
+        setMinUpdateIntervalMillis(3000)
+        setMaxUpdateDelayMillis(10000)
     }.build()
 
     private val schedule2 = listOf(
@@ -108,6 +119,14 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // SharedPreferences'tan userId ve telefon numarasını yükle
+        val prefs = getSharedPreferences("AppPrefs", Context.MODE_PRIVATE)
+        userId = prefs.getString("userId", UUID.randomUUID().toString().take(8)) ?: UUID.randomUUID().toString().take(8)
+        userPhoneNumber = prefs.getString("phoneNumber", "") ?: ""
+
+        // userId'yi kaydet
+        prefs.edit().putString("userId", userId).apply()
+
         try {
             val token = getString(R.string.mapbox_access_token)
             com.mapbox.common.MapboxOptions.accessToken = token
@@ -122,17 +141,13 @@ class MainActivity : AppCompatActivity() {
 
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
 
-        // Adım sayacı sensor kurulumu
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
         stepCounterSensor = sensorManager?.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)
 
         setupLocationCallback()
         initializeBusStops()
-
-        // Her zaman butonları oluştur
         setupDynamicButtons()
 
-        // Harita her zaman yüklensin
         mapView.getMapboxMap().loadStyleUri(com.mapbox.maps.Style.MAPBOX_STREETS) {
             addBusStopMarkers()
             startFetchingUserLocations()
@@ -141,32 +156,67 @@ class MainActivity : AppCompatActivity() {
 
         sendLocationButton.setOnClickListener {
             if (!isLocationTrackingActive) {
-                startContinuousLocationTracking()
+                // Manuel mod başlatmadan önce telefon numarası iste
+                showPhoneNumberDialog()
             } else {
                 stopContinuousLocationTracking()
             }
         }
 
-        // İzinleri kontrol et ve iste
         checkAndRequestPermissions()
     }
 
+    private fun showPhoneNumberDialog() {
+
+
+        if (userPhoneNumber.isNotEmpty()) {
+            startContinuousLocationTracking()
+            return
+        }
+
+
+        val input = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_PHONE
+            hint = "Telefon numaranızı girin (05XX XXX XX XX)"
+            setText(userPhoneNumber)
+            setPadding(50, 30, 50, 30)
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("📱 Telefon Numarası")
+            .setMessage("Taksi arkadaşı arayanlar sizinle iletişime geçebilsin mi?")
+            .setView(input)
+            .setPositiveButton("Başlat") { _, _ ->
+                val phone = input.text.toString().trim()
+                if (phone.isNotEmpty()) {
+                    userPhoneNumber = phone
+                    // Telefon numarasını kaydet
+                    getSharedPreferences("AppPrefs", Context.MODE_PRIVATE)
+                        .edit()
+                        .putString("phoneNumber", phone)
+                        .apply()
+
+                    startContinuousLocationTracking()
+                } else {
+                    Toast.makeText(this, "Telefon numarası girilmedi!", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNegativeButton("İptal", null)
+            .show()
+    }
+
     private fun checkAndRequestPermissions() {
-        // Konum izni kontrolü
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
             != PackageManager.PERMISSION_GRANTED
         ) {
             requestLocationPermission()
         } else {
-            // Konum izni var, haritayı etkinleştir
             enableLocationOnMap()
-            // Diğer izinleri kontrol et
             checkOtherPermissions()
         }
     }
 
     private fun checkOtherPermissions() {
-        // Adım sayacı izni (Android 10+)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACTIVITY_RECOGNITION)
                 == PackageManager.PERMISSION_GRANTED
@@ -177,12 +227,11 @@ class MainActivity : AppCompatActivity() {
             registerStepCounter()
         }
 
-        // Bildirim izni (Android 13+)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ActivityCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
                 != PackageManager.PERMISSION_GRANTED
             ) {
-                // Sessizce kaydet, kullanıcıyı rahatsız etme
+                // Sessizce kaydet
             }
         }
     }
@@ -197,7 +246,6 @@ class MainActivity : AppCompatActivity() {
                 LOCATION_PERMISSION_REQUEST_CODE
             )
         } else {
-            // Konum izni var, diğer izinleri iste
             Handler(Looper.getMainLooper()).postDelayed({
                 requestOtherPermissions()
             }, 500)
@@ -205,7 +253,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun requestOtherPermissions() {
-        // Adım sayacı izni (Android 10+)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACTIVITY_RECOGNITION)
                 != PackageManager.PERMISSION_GRANTED
@@ -223,7 +270,6 @@ class MainActivity : AppCompatActivity() {
             registerStepCounter()
         }
 
-        // Bildirim izni (Android 13+)
         Handler(Looper.getMainLooper()).postDelayed({
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 if (ActivityCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
@@ -260,7 +306,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupDynamicButtons() {
-        // Debug butonu
         debugButton = android.widget.Button(this).apply {
             text = "DEBUG"
             setBackgroundColor(Color.parseColor("#AAFF0000"))
@@ -283,6 +328,7 @@ class MainActivity : AppCompatActivity() {
             val nearestStopName = currentNearbyBusStop?.label ?: "Yok"
             val debugText = """
                 User ID: $userId
+                Telefon: $userPhoneNumber
                 
                 SERVER BİLGİLERİ:
                 Backend: ${Constants.SEND_LOCATION_URL}
@@ -292,8 +338,8 @@ class MainActivity : AppCompatActivity() {
                 Durağın altındayım: $wasAtStop
                 Durakta bekleme süresi: ${secondsAtStop}s
                 En yakın durak: $nearestStopName
-                Otomatik gönderim: $isAutoSending
-                Manuel izleme: $isLocationTrackingActive
+                Otomatik gönderim (Otobüs): $isAutoSending
+                Manuel gönderim (Taksi): $isLocationTrackingActive
                 Mevcut Konum: ${currentLocation?.latitude}, ${currentLocation?.longitude}
                 
                 DİĞER KULLANICILAR:
@@ -304,14 +350,9 @@ class MainActivity : AppCompatActivity() {
                 .setTitle("Debug Bilgisi")
                 .setMessage(debugText)
                 .setPositiveButton("Tamam", null)
-                .setNeutralButton("Test Gönder") { _, _ ->
-                    sendCurrentLocation()
-                    Toast.makeText(this, "Test konumu gönderildi", Toast.LENGTH_SHORT).show()
-                }
                 .show()
         }
 
-        // Neredeyim butonu
         locateButton = android.widget.Button(this).apply {
             text = "Neredeyim"
             setBackgroundColor(Color.WHITE)
@@ -396,20 +437,16 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (nearestDistance <= STOP_DISTANCE_METERS) {
-            // Durağın içindeyiz
             if (!wasAtStop) {
-                // Yeni durağa girdik
                 stopStartTime = System.currentTimeMillis()
-                initialStepCount = -1 // Adım sayacını sıfırla
+                initialStepCount = -1
                 stepsSinceLeave = 0
                 Toast.makeText(this, "Durağa girdiniz: ${nearestStop?.label}", Toast.LENGTH_SHORT).show()
             }
             wasAtStop = true
             currentNearbyBusStop = nearestStop
         } else {
-            // Duraktan uzaktayız
             if (wasAtStop) {
-                // Durağı yeni terk ettik
                 Toast.makeText(this, "Durağı terk ettiniz", Toast.LENGTH_SHORT).show()
                 startAutoLocationSending()
                 wasAtStop = false
@@ -422,12 +459,13 @@ class MainActivity : AppCompatActivity() {
         if (isAutoSending) return
 
         isAutoSending = true
-        Toast.makeText(this, "Otobuste olduğunuz algılandı, konumunuz diğer kullanicilarla paylaşılıyor. (Arka planda çalışır)", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "Otobüste olduğunuz algılandı, konumunuz paylaşılıyor (Arka planda çalışır)", Toast.LENGTH_LONG).show()
 
-        // Foreground Service'i başlat (otomatik mod)
         val serviceIntent = Intent(this, LocationForegroundService::class.java)
         serviceIntent.putExtra("userId", userId)
         serviceIntent.putExtra("isManual", false)
+        serviceIntent.putExtra("phoneNumber", "")
+        serviceIntent.putExtra("userType", "bus")
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(serviceIntent)
@@ -437,7 +475,6 @@ class MainActivity : AppCompatActivity() {
 
         autoSendRunnable = object : Runnable {
             override fun run() {
-                // Adım sayısını her çalıştırmada kontrol et
                 if (stepsSinceLeave <= MAX_STEPS) {
                     autoSendHandler.postDelayed(this, AUTO_SEND_INTERVAL)
                 } else {
@@ -454,7 +491,6 @@ class MainActivity : AppCompatActivity() {
         isAutoSending = false
         autoSendRunnable?.let { autoSendHandler.removeCallbacks(it) }
 
-        // Sadece manuel mod kapalıysa servisi durdur
         if (!isLocationTrackingActive) {
             val serviceIntent = Intent(this, LocationForegroundService::class.java)
             stopService(serviceIntent)
@@ -477,7 +513,6 @@ class MainActivity : AppCompatActivity() {
                         )
                     }
 
-                    // Durak kontrolü ve otomatik gönderim
                     checkBusStopAndTriggerAutoSend(location)
                 }
             }
@@ -496,14 +531,13 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        // Android 10+ için arka plan konum izni
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_BACKGROUND_LOCATION)
                 != PackageManager.PERMISSION_GRANTED
             ) {
                 AlertDialog.Builder(this)
                     .setTitle("Arka Plan Konum İzni")
-                    .setMessage("Otobüslerin konumunun canlı takip edilebilmesi için arka plan konum iznine ihtiyaç var. Lütfen 'Her zaman izin ver' seçeneğini seçin.")
+                    .setMessage("Otobüslerin konumunun canlı takip edilebilmesi için arka plan konum iznine ihtiyaç var.")
                     .setPositiveButton("İzin Ver") { _, _ ->
                         ActivityCompat.requestPermissions(
                             this,
@@ -535,7 +569,7 @@ class MainActivity : AppCompatActivity() {
             mainLooper
         )
 
-        Toast.makeText(this, "Konum izleme başladı", Toast.LENGTH_SHORT).show()
+        Log.d(TAG, "Konum güncellemeleri başlatıldı")
     }
 
     private fun stopLocationUpdates() {
@@ -547,12 +581,13 @@ class MainActivity : AppCompatActivity() {
         sendLocationButton.text = "Aramayı Durdur"
         sendLocationButton.setBackgroundColor(Color.RED)
 
-        Toast.makeText(this, "Taksi arkadaşı arama talebiniz alındı. (Arka planda çalışır)", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "Taksi arkadaşı arama talebiniz alındı (Arka planda çalışır)", Toast.LENGTH_LONG).show()
 
-        // Foreground Service'i başlat (manuel mod)
         val serviceIntent = Intent(this, LocationForegroundService::class.java)
         serviceIntent.putExtra("userId", userId)
         serviceIntent.putExtra("isManual", true)
+        serviceIntent.putExtra("phoneNumber", userPhoneNumber)
+        serviceIntent.putExtra("userType", "taxi")
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(serviceIntent)
@@ -570,63 +605,19 @@ class MainActivity : AppCompatActivity() {
 
     private fun stopContinuousLocationTracking() {
         isLocationTrackingActive = false
-        sendLocationButton.text = "Taksı arkadaşı ara"
+        sendLocationButton.text = "Taksi arkadaşı ara"
         sendLocationButton.setBackgroundColor(Color.parseColor("#4285F4"))
 
         sendLocationRunnable?.let { locationTrackingHandler.removeCallbacks(it) }
 
-        // Sadece otomatik mod kapalıysa servisi durdur
         if (!isAutoSending) {
             val serviceIntent = Intent(this, LocationForegroundService::class.java)
             stopService(serviceIntent)
         }
 
-        Toast.makeText(this, "taksi arkadaşı arama durduruldu", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "Taksi arkadaşı arama durduruldu", Toast.LENGTH_SHORT).show()
     }
 
-    private fun sendCurrentLocation() {
-        val location = currentLocation ?: return
-
-        val json = JSONObject().apply {
-            put("userId", userId)
-            put("latitude", location.latitude)
-            put("longitude", location.longitude)
-        }
-
-        val body = json.toString().toRequestBody("application/json".toMediaType())
-        val request = Request.Builder()
-            .url(Constants.SEND_LOCATION_URL)
-            .post(body)
-            .addHeader("x-api-key", Constants.API_KEY)
-            .addHeader("Content-Type", "application/json")
-            .build()
-
-        Log.d(TAG, "Test konum gönderiliyor: $json")
-
-        client.newCall(request).enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) {
-                Log.e(TAG, "Test gönderim hatası: ${e.message}")
-                runOnUiThread {
-                    Toast.makeText(this@MainActivity, "Test başarısız: ${e.message}", Toast.LENGTH_SHORT).show()
-                }
-            }
-
-            override fun onResponse(call: Call, response: Response) {
-                val responseBody = response.body?.string()
-                Log.d(TAG, "Test yanıt: ${response.code} - $responseBody")
-                runOnUiThread {
-                    if (response.isSuccessful) {
-                        Toast.makeText(this@MainActivity, "Test başarılı!", Toast.LENGTH_SHORT).show()
-                    } else {
-                        Toast.makeText(this@MainActivity, "Test hatası: ${response.code}", Toast.LENGTH_SHORT).show()
-                    }
-                }
-                response.close()
-            }
-        })
-    }
-
-    // DOĞRU ENDPOİNT İLE KULLANICILARI ÇEK
     private fun startFetchingUserLocations() {
         val fetchRunnable = object : Runnable {
             override fun run() {
@@ -658,14 +649,25 @@ class MainActivity : AppCompatActivity() {
 
                             if (jsonObject.getBoolean("success")) {
                                 val dataArray = jsonObject.getJSONArray("data")
-                                val userLocations = mutableListOf<Triple<String, Double, Double>>()
+                                val userLocations = mutableListOf<UserLocationData>()
 
                                 for (i in 0 until dataArray.length()) {
                                     val obj = dataArray.getJSONObject(i)
                                     val fetchedUserId = obj.getString("userId")
                                     val latitude = obj.getDouble("latitude")
                                     val longitude = obj.getDouble("longitude")
-                                    userLocations.add(Triple(fetchedUserId, latitude, longitude))
+                                    val userType = obj.optString("userType", "bus")
+                                    val phoneNumber = obj.optString("phoneNumber", null)
+
+                                    userLocations.add(
+                                        UserLocationData(
+                                            fetchedUserId,
+                                            latitude,
+                                            longitude,
+                                            userType,
+                                            phoneNumber
+                                        )
+                                    )
                                 }
 
                                 Log.d(TAG, "Çekilen kullanıcı sayısı: ${userLocations.size}")
@@ -687,53 +689,52 @@ class MainActivity : AppCompatActivity() {
         })
     }
 
-    private fun updateUserMarkersOnMap(userLocations: List<Triple<String, Double, Double>>) {
-        // Kendi kullanıcı ID'mizi filtrele
-        val otherUsers = userLocations.filter { it.first != userId }
+    private fun updateUserMarkersOnMap(userLocations: List<UserLocationData>) {
+        val otherUsers = userLocations.filter { it.userId != userId }
 
         Log.d(TAG, "Haritada gösterilecek kullanıcılar: ${otherUsers.size}")
 
-        // Eski marker'ları çıkar
         val toRemove = mutableListOf<String>()
         userLocationAnnotations.forEach { (userId, annotation) ->
-            if (otherUsers.none { it.first == userId }) {
+            if (otherUsers.none { it.userId == userId }) {
                 pointAnnotationManager?.delete(annotation)
                 toRemove.add(userId)
             }
         }
         toRemove.forEach { userLocationAnnotations.remove(it) }
 
-        // Yeni marker'ları ekle veya güncelle
-        otherUsers.forEach { (userId, latitude, longitude) ->
-            val point = Point.fromLngLat(longitude, latitude)
+        otherUsers.forEach { userData ->
+            val point = Point.fromLngLat(userData.longitude, userData.latitude)
 
-            if (userLocationAnnotations.containsKey(userId)) {
-                val annotation = userLocationAnnotations[userId]
+            if (userLocationAnnotations.containsKey(userData.userId)) {
+                val annotation = userLocationAnnotations[userData.userId]
                 if (annotation != null) {
-                    // Marker var, güncelle
                     annotation.point = point
                     pointAnnotationManager?.update(annotation)
-                    Log.d(TAG, "Marker güncellendi: $userId")
+                    Log.d(TAG, "Marker güncellendi: ${userData.userId}")
                 }
             } else {
-                // Yeni marker ekle
+                val iconName = if (userData.userType == "taxi") "taxi-icon" else "bus-icon"
+
                 val annotationOptions = PointAnnotationOptions()
                     .withPoint(point)
-                    .withIconImage("user-location-icon")
+                    .withIconImage(iconName)
                     .withIconSize(1.2)
 
                 val annotation = pointAnnotationManager?.create(annotationOptions)
                 if (annotation != null) {
-                    userLocationAnnotations[userId] = annotation
-                    Log.d(TAG, "Yeni marker eklendi: $userId")
+                    userLocationAnnotations[userData.userId] = annotation
+                    Log.d(TAG, "Yeni marker eklendi: ${userData.userId} (${userData.userType})")
 
                     pointAnnotationManager?.addClickListener { clicked ->
                         if (clicked == annotation) {
-                            Toast.makeText(
-                                this,
-                                "Kullanıcı ID: ${userId.take(6)}",
-                                Toast.LENGTH_SHORT
-                            ).show()
+                            val message = if (userData.userType == "taxi" && !userData.phoneNumber.isNullOrEmpty()) {
+                                "📱 Telefon: ${userData.phoneNumber}\n🚕 Taksi"
+                            } else {
+                                "🚌 Otobüs\nID: ${userData.userId.take(6)}"
+                            }
+
+                            Toast.makeText(this, message, Toast.LENGTH_LONG).show()
                             true
                         } else {
                             false
@@ -774,17 +775,55 @@ class MainActivity : AppCompatActivity() {
         return bitmap
     }
 
+    private fun createBusIcon(): android.graphics.Bitmap {
+        val size = 80
+        val bitmap = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ARGB_8888)
+        val canvas = android.graphics.Canvas(bitmap)
+
+        val textPaint = android.graphics.Paint().apply {
+            textSize = 60f
+            textAlign = android.graphics.Paint.Align.CENTER
+            isAntiAlias = true
+        }
+
+        val xPos = (size / 2).toFloat()
+        val yPos = (size / 2 - (textPaint.descent() + textPaint.ascent()) / 2).toFloat()
+        canvas.drawText("🚌", xPos, yPos, textPaint)
+
+        return bitmap
+    }
+
+    private fun createTaxiIcon(): android.graphics.Bitmap {
+        val size = 80
+        val bitmap = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ARGB_8888)
+        val canvas = android.graphics.Canvas(bitmap)
+
+        val textPaint = android.graphics.Paint().apply {
+            textSize = 60f
+            textAlign = android.graphics.Paint.Align.CENTER
+            isAntiAlias = true
+        }
+
+        val xPos = (size / 2).toFloat()
+        val yPos = (size / 2 - (textPaint.descent() + textPaint.ascent()) / 2).toFloat()
+        canvas.drawText("🚕", xPos, yPos, textPaint)
+
+        return bitmap
+    }
+
     private fun addBusStopMarkers() {
         val annotationApi = mapView.annotations
         pointAnnotationManager = annotationApi.createPointAnnotationManager()
 
         val busStopMarker = createBusStopMarker()
-        val userLocationMarker = createUserLocationMarker()
+        val busIcon = createBusIcon()
+        val taxiIcon = createTaxiIcon()
 
         try {
             mapView.getMapboxMap().getStyle { style ->
                 style.addImage("bus-stop-icon", busStopMarker, false)
-                style.addImage("user-location-icon", userLocationMarker, false)
+                style.addImage("bus-icon", busIcon, false)
+                style.addImage("taxi-icon", taxiIcon, false)
             }
         } catch (e: Exception) {
             e.printStackTrace()
@@ -844,7 +883,7 @@ class MainActivity : AppCompatActivity() {
 
         val xPos = (size / 2).toFloat()
         val yPos = (size / 2 - (textPaint.descent() + textPaint.ascent()) / 2).toFloat()
-        canvas.drawText("\uD83D\uDE8F", xPos, yPos, textPaint)
+        canvas.drawText("🚏", xPos, yPos, textPaint)
 
         return bitmap
     }
@@ -913,13 +952,11 @@ class MainActivity : AppCompatActivity() {
                 if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
                     Toast.makeText(this, "Konum izni verildi", Toast.LENGTH_SHORT).show()
                     enableLocationOnMap()
-                    // 500ms sonra diğer izinleri iste
                     Handler(Looper.getMainLooper()).postDelayed({
                         requestOtherPermissions()
                     }, 500)
                 } else {
-                    Toast.makeText(this, "Konum izni gerekli! Bazı özellikler çalışmayacak.", Toast.LENGTH_LONG).show()
-                    // İzin olmasa bile diğer izinleri dene
+                    Toast.makeText(this, "Konum izni gerekli!", Toast.LENGTH_LONG).show()
                     Handler(Looper.getMainLooper()).postDelayed({
                         requestOtherPermissions()
                     }, 500)
@@ -930,9 +967,8 @@ class MainActivity : AppCompatActivity() {
                     Toast.makeText(this, "Adım sayacı izni verildi", Toast.LENGTH_SHORT).show()
                     registerStepCounter()
                 } else {
-                    Toast.makeText(this, "Adım sayacı izni verilmedi, bu özellik çalışmayacak", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, "Adım sayacı izni verilmedi", Toast.LENGTH_LONG).show()
                 }
-                // 500ms sonra bildirim iznini iste
                 Handler(Looper.getMainLooper()).postDelayed({
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
@@ -980,7 +1016,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
-        stopLocationUpdates()
+        // Konum güncellemelerini DURDURMUYORUZ - sürekli çalışsın
+        // stopLocationUpdates()
     }
 
     override fun onStop() {

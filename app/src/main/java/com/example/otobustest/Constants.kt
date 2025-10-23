@@ -5,7 +5,7 @@ object Constants {
     // Örnek: private const val BASE_URL = "http://192.168.1.100:3000"
     // Android emulator için: 10.0.2.2
     // Fiziksel cihaz için: bilgisayarınızın yerel IP'si
-    private const val BASE_URL = "https://safe-hereby-jewish-bin.trycloudflare.com"
+    private const val BASE_URL = "http://10.90.3.14:3000"
 
     // API Endpoints
     const val SEND_LOCATION_URL = "$BASE_URL/konum"

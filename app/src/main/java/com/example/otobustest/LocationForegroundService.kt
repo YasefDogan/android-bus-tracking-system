@@ -33,8 +33,9 @@ class LocationForegroundService : Service() {
         var isServiceRunning = false
         var userId: String = ""
         var isManualMode: Boolean = false
+        var phoneNumber: String = ""
+        var userType: String = "bus"
 
-        // MainActivity'nin eriştiği sayaçlar
         var totalSent: Int = 0
         var successCount: Int = 0
         var failureCount: Int = 0
@@ -51,15 +52,17 @@ class LocationForegroundService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         userId = intent?.getStringExtra("userId") ?: "bus_driver_001"
         isManualMode = intent?.getBooleanExtra("isManual", false) ?: false
+        phoneNumber = intent?.getStringExtra("phoneNumber") ?: ""
+        userType = intent?.getStringExtra("userType") ?: "bus"
 
-        val modeText = if (isManualMode) "Manuel" else "Otomatik"
-        val notification = createNotification("$modeText konum gönderimi aktif...")
+        val modeText = if (isManualMode) "🚕 Taksi Modu" else "🚌 Otobüs Modu"
+        val notification = createNotification("$modeText - Konum paylaşılıyor...")
         startForeground(NOTIFICATION_ID, notification)
 
         startLocationUpdates()
         isServiceRunning = true
 
-        Log.d(TAG, "Servis başlatıldı - Mod: $modeText, UserId: $userId")
+        Log.d(TAG, "Servis başlatıldı - Mod: $modeText, UserId: $userId, Type: $userType")
 
         return START_STICKY
     }
@@ -78,10 +81,10 @@ class LocationForegroundService : Service() {
     private fun startLocationUpdates() {
         val locationRequest = LocationRequest.Builder(
             Priority.PRIORITY_HIGH_ACCURACY,
-            Constants.LOCATION_UPDATE_INTERVAL
+            5000 // 5 saniye
         ).apply {
-            setMinUpdateIntervalMillis(Constants.LOCATION_FASTEST_INTERVAL)
-            setMaxUpdateDelayMillis(Constants.LOCATION_MAX_WAIT_TIME)
+            setMinUpdateIntervalMillis(3000) // Minimum 3 saniye
+            setMaxUpdateDelayMillis(10000) // Maksimum 10 saniye
         }.build()
 
         try {
@@ -90,7 +93,7 @@ class LocationForegroundService : Service() {
                 locationCallback,
                 mainLooper
             )
-            Log.d(TAG, "Konum güncellemeleri başlatıldı")
+            Log.d(TAG, "Konum güncellemeleri başlatıldı (5 saniye aralıkla)")
         } catch (e: SecurityException) {
             Log.e(TAG, "Konum izni yok: ${e.message}")
             stopSelf()
@@ -104,7 +107,13 @@ class LocationForegroundService : Service() {
             put("userId", userId)
             put("latitude", latitude)
             put("longitude", longitude)
+            put("userType", userType)
             put("timestamp", System.currentTimeMillis())
+
+            // Taksi modu ise telefon numarasını gönder
+            if (userType == "taxi" && phoneNumber.isNotEmpty()) {
+                put("phoneNumber", phoneNumber)
+            }
         }
 
         val body = json.toString().toRequestBody("application/json".toMediaType())
@@ -123,7 +132,8 @@ class LocationForegroundService : Service() {
             override fun onFailure(call: Call, e: IOException) {
                 failureCount++
                 Log.e(TAG, "Gönderim hatası: ${e.message}")
-                updateNotification("❌ Bağlantı hatası: ${e.message?.take(30)}")
+                val emoji = if (userType == "taxi") "🚕" else "🚌"
+                updateNotification("❌ $emoji Bağlantı hatası: ${e.message?.take(30)}")
             }
 
             override fun onResponse(call: Call, response: Response) {
@@ -131,12 +141,14 @@ class LocationForegroundService : Service() {
 
                 if (response.isSuccessful) {
                     successCount++
-                    val modeText = if (isManualMode) "Manuel" else "Otomatik"
-                    updateNotification("✅ $modeText - Başarılı (${successCount}/${totalSent})")
+                    val emoji = if (userType == "taxi") "🚕" else "🚌"
+                    val modeText = if (isManualMode) "Taksi" else "Otobüs"
+                    updateNotification("✅ $emoji $modeText - Başarılı (${successCount}/${totalSent})")
                     Log.d(TAG, "Gönderim başarılı: $responseBody")
                 } else {
                     failureCount++
-                    updateNotification("❌ Sunucu hatası: ${response.code}")
+                    val emoji = if (userType == "taxi") "🚕" else "🚌"
+                    updateNotification("❌ $emoji Sunucu hatası: ${response.code}")
                     Log.e(TAG, "Sunucu hatası ${response.code}: $responseBody")
                 }
 
@@ -152,7 +164,7 @@ class LocationForegroundService : Service() {
                 "Konum Servisi",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Otobüs konumu takibi için arka plan servisi"
+                description = "Konum takibi için arka plan servisi"
                 setShowBadge(false)
             }
 
@@ -180,8 +192,10 @@ class LocationForegroundService : Service() {
             null
         }
 
+        val title = if (userType == "taxi") "🚕 Taksi Arkadaşı Arama" else "🚌 Otobüs Takip"
+
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("🚌 Otobüs Takip Aktif")
+            .setContentTitle(title)
             .setContentText(contentText)
             .setSmallIcon(android.R.drawable.ic_menu_mylocation)
             .setContentIntent(pendingIntent)
@@ -202,7 +216,6 @@ class LocationForegroundService : Service() {
         fusedLocationClient.removeLocationUpdates(locationCallback)
         isServiceRunning = false
 
-        // Sayaçları sıfırla
         totalSent = 0
         successCount = 0
         failureCount = 0
